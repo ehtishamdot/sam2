@@ -41,3 +41,5 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+              # For long videos ensure the selected GPU has ample memory
+              # (at least 24GB is recommended)
