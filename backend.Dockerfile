@@ -30,6 +30,7 @@ COPY README.md .
 
 RUN pip install --upgrade pip setuptools
 RUN pip install -e ".[interactive-demo]"
+RUN pip install "eva-decord>=0.6.1"
 
 # https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/issues/69#issuecomment-1826764707
 RUN rm /opt/conda/bin/ffmpeg && ln -s /bin/ffmpeg /opt/conda/bin/ffmpeg

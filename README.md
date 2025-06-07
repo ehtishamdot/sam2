@@ -193,6 +193,10 @@ You can train or fine-tune SAM 2 on custom datasets of images, videos, or both. 
 
 We have released the frontend + backend code for the SAM 2 web demo (a locally deployable version similar to https://sam2.metademolab.com/demo). Please see the web demo [README](demo/README.md) for details.
 
+### Processing longer videos
+
+The demo backend limits uploads to 10 seconds by default. To enable longer uploads set the `MAX_UPLOAD_VIDEO_DURATION` environment variable (in seconds) when starting the backend. If the demo is served behind `nginx` you may also need to raise the `client_max_body_size` directive so larger video files can be uploaded. Processing extended clips requires a GPU and we recommend using a card with **at least 24&nbsp;GB** of memory.
+
 ## License
 
 The SAM 2 model checkpoints, SAM 2 demo code (front-end and back-end), and SAM 2 training code are licensed under [Apache 2.0](./LICENSE), however the [Inter Font](https://github.com/rsms/inter?tab=OFL-1.1-1-ov-file) and [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) used in the SAM 2 demo code are made available under the [SIL Open Font License, version 1.1](https://openfontlicense.org/open-font-license-official-text/).
