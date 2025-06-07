@@ -54,19 +54,6 @@ import {
   VideoWorkerResponse,
 } from './VideoWorkerTypes';
 
-function getEvenlySpacedItems(decodedVideo: DecodedVideo, x: number) {
-  const p = Math.floor(decodedVideo.numFrames / Math.max(1, x - 1));
-  const middleFrames = decodedVideo.frames
-    .slice(p, p * x)
-    .filter(function (_, i) {
-      return 0 == i % p;
-    });
-  return [
-    decodedVideo.frames[0],
-    ...middleFrames,
-    decodedVideo.frames[decodedVideo.numFrames - 1],
-  ];
-}
 
 export type FrameInfo = {
   tracklet: Tracklet;
@@ -93,6 +80,9 @@ export default class VideoWorkerContext {
   private _ctx: OffscreenCanvasRenderingContext2D | null = null;
   private _form: CanvasForm | null = null;
   private _decodedVideo: DecodedVideo | null = null;
+  private _frameGenerator: AsyncGenerator<ImageFrame> | null = null;
+  private _frameBuffer: ImageFrame[] = [];
+  private _bufferStartIndex: number = 0;
   private _frameIndex: number = 0;
   private _isPlaying: boolean = false;
   private _playbackRAFHandle: number | null = null;
@@ -108,6 +98,41 @@ export default class VideoWorkerContext {
   private _effects: Effect[];
   private _tracklets: Tracklet[] = [];
 
+  private readonly FRAME_WINDOW = 30;
+
+  private async _ensureFrame(index: number): Promise<void> {
+    if (this._frameGenerator == null) {
+      return;
+    }
+    while (index >= this._bufferStartIndex + this._frameBuffer.length) {
+      const {value, done} = await this._frameGenerator.next();
+      if (done || value == null) {
+        break;
+      }
+      this._frameBuffer.push(value);
+      if (this._frameBuffer.length > this.FRAME_WINDOW) {
+        const old = this._frameBuffer.shift();
+        old?.bitmap.close();
+        this._bufferStartIndex++;
+      }
+    }
+  }
+
+  private async _getEvenlySpacedItems(x: number): Promise<ImageFrame[]> {
+    const frames: ImageFrame[] = [];
+    if (this._decodedVideo == null) {
+      return frames;
+    }
+    const step = Math.floor(this._decodedVideo.numFrames / Math.max(1, x - 1));
+    for (let i = 0; i < x; i++) {
+      const index = Math.min(i * step, this._decodedVideo.numFrames - 1);
+      await this._ensureFrame(index);
+      const idx = index - this._bufferStartIndex;
+      frames.push(this._frameBuffer[idx]);
+    }
+    return frames;
+  }
+
   public get width(): number {
     return this._decodedVideo?.width ?? 0;
   }
@@ -121,7 +146,8 @@ export default class VideoWorkerContext {
   }
 
   public get currentFrame(): VideoFrame | null {
-    return this._decodedVideo?.frames[this._frameIndex].bitmap ?? null;
+    const idx = this._frameIndex - this._bufferStartIndex;
+    return this._frameBuffer[idx]?.bitmap ?? null;
   }
 
   constructor() {
@@ -292,8 +318,7 @@ export default class VideoWorkerContext {
         const scale = canvas.height / this._decodedVideo.height;
         const resizeWidth = this._decodedVideo.width * scale;
 
-        const spacedFrames = getEvenlySpacedItems(
-          this._decodedVideo,
+        const spacedFrames = await this._getEvenlySpacedItems(
           Math.ceil(canvas.width / resizeWidth),
         );
 
@@ -400,7 +425,7 @@ export default class VideoWorkerContext {
     const file = await encodeVideo(
       this.width,
       this.height,
-      decodedVideo.frames.length,
+      decodedVideo.numFrames,
       this._framesGenerator(decodedVideo, canvas, form),
       progress => {
         this.sendResponse<EncodingStateUpdateResponse>('encodingStateUpdate', {
@@ -422,12 +447,12 @@ export default class VideoWorkerContext {
     canvas: OffscreenCanvas,
     form: CanvasForm,
   ): AsyncGenerator<ImageFrame, undefined> {
-    const frames = decodedVideo.frames;
-
-    for (let frameIndex = 0; frameIndex < frames.length; ++frameIndex) {
+    for (let frameIndex = 0; frameIndex < decodedVideo.numFrames; ++frameIndex) {
+      await this._ensureFrame(frameIndex);
       await this._drawFrameImpl(form, frameIndex, true);
 
-      const frame = frames[frameIndex];
+      const idx = frameIndex - this._bufferStartIndex;
+      const frame = this._frameBuffer[idx];
       const videoFrame = new VideoFrame(canvas, {
         timestamp: frame.bitmap.timestamp,
       });
@@ -478,7 +503,10 @@ export default class VideoWorkerContext {
     this._ctx?.reset();
 
     // Close frames of previously decoded video.
-    this._decodedVideo?.frames.forEach(f => f.bitmap.close());
+    this._frameBuffer.forEach(f => f.bitmap.close());
+    this._frameBuffer = [];
+    this._bufferStartIndex = 0;
+    this._frameGenerator = null;
     this._decodedVideo = null;
   }
 
@@ -534,8 +562,7 @@ export default class VideoWorkerContext {
 
     let renderedFirstFrame = false;
     this._decodedVideo = await decodeStream(fileStream, async progress => {
-      const {fps, height, width, numFrames, frames} = progress;
-      this._decodedVideo = progress;
+      const {fps, height, width, numFrames, framesDecoded} = progress;
       if (!renderedFirstFrame) {
         renderedFirstFrame = true;
         canvas.width = width;
@@ -578,13 +605,16 @@ export default class VideoWorkerContext {
       }
       this.sendResponse<DecodeResponse>('decode', {
         totalFrames: numFrames,
-        numFrames: frames.length,
+        numFrames: framesDecoded,
         fps: fps,
         width: width,
         height: height,
         done: false,
       });
     });
+
+    this._frameGenerator = this._decodedVideo.frames[Symbol.asyncIterator]();
+    await this._ensureFrame(0);
 
     if (!renderedFirstFrame) {
       canvas.width = this._decodedVideo.width;
@@ -594,7 +624,7 @@ export default class VideoWorkerContext {
 
     this.sendResponse<DecodeResponse>('decode', {
       totalFrames: this._decodedVideo.numFrames,
-      numFrames: this._decodedVideo.frames.length,
+      numFrames: this._decodedVideo.numFrames,
       fps: this._decodedVideo.fps,
       width: this._decodedVideo.width,
       height: this._decodedVideo.height,
@@ -626,7 +656,9 @@ export default class VideoWorkerContext {
     }
 
     try {
-      const frame = this._decodedVideo.frames[frameIndex];
+      await this._ensureFrame(frameIndex);
+      const idx = frameIndex - this._bufferStartIndex;
+      const frame = this._frameBuffer[idx];
       const {bitmap} = frame;
 
       this._stats.frameBmp?.begin();
@@ -671,7 +703,7 @@ export default class VideoWorkerContext {
         masks: effectMasks,
         maskColors: colors,
         frameIndex: frameIndex,
-        totalFrames: this._decodedVideo.frames.length,
+        totalFrames: this._decodedVideo.numFrames,
         fps: this._decodedVideo.fps,
         width: frameBitmap.width,
         height: frameBitmap.height,

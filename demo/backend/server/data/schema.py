@@ -44,7 +44,7 @@ from data.transcoder import get_video_metadata, transcode, VideoMetadata
 from inference.data_types import (
     AddPointsRequest,
     CancelPropagateInVideoRequest,
-    CancelPropagateInVideoRequest,
+    PropagateInVideoRequest,
     ClearPointsInFrameRequest,
     ClearPointsInVideoRequest,
     CloseSessionRequest,
@@ -94,7 +94,6 @@ class Query:
         inference_api: InferenceAPI = info.context["inference_api"]
         mapping = inference_api.get_object_clip_urls(session_id)
         return [ObjectClip(object_id=k, url=f"{API_URL}/{v}") for k, v in mapping.items()]
-
 
 @strawberry.type
 class Mutation:
@@ -249,6 +248,21 @@ class Mutation:
         )
         response = inference_api.clear_points_in_video(request)
         return ClearPointsInVideo(success=response.success)
+
+    @strawberry.mutation
+    def start_background_propagation(
+        self, input: StartBackgroundPropagationInput, info: strawberry.Info
+    ) -> BackgroundPropagation:
+        """Trigger asynchronous propagation for a session."""
+        inference_api: InferenceAPI = info.context["inference_api"]
+
+        request = PropagateInVideoRequest(
+            type="propagate_in_video",
+            session_id=input.session_id,
+            start_frame_index=input.start_frame_index,
+        )
+        inference_api.start_propagate_background(request)
+        return BackgroundPropagation(success=True)
 
     @strawberry.mutation
     def cancel_propagate_in_video(

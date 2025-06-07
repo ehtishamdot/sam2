@@ -33,6 +33,7 @@ services:
       - VIDEO_ENCODE_MAX_WIDTH=1280
       - VIDEO_ENCODE_MAX_HEIGHT=720
       - VIDEO_ENCODE_VERBOSE=False
+      - MAX_UPLOAD_VIDEO_DURATION=7200
     deploy:
       resources:
         reservations:

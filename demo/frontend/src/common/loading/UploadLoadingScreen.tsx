@@ -28,7 +28,7 @@ export default function UploadLoadingScreen() {
     return (
       <LoadingStateScreen
         title="Uh oh, we cannot process this video"
-        description="Please upload another video, and make sure that the video’s file size is less than 70Mb. ">
+        description="Please upload another video, and make sure that the video’s file size is less than 2048MB. ">
         <div className="max-w-[250px] w-full mx-auto">
           <ChangeVideoModal
             videoGalleryModalTrigger={UploadLoadingScreenChangeVideoTrigger}

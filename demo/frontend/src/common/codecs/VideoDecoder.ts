@@ -34,27 +34,32 @@ export type ImageFrame = {
 export type DecodedVideo = {
   width: number;
   height: number;
-  frames: ImageFrame[];
   numFrames: number;
   fps: number;
+  frames: AsyncGenerator<ImageFrame, void>;
 };
+
+type DecodedMetadata = Omit<DecodedVideo, 'frames'>;
 
 function decodeInternal(
   identifier: string,
   onReady: (mp4File: MP4File) => Promise<void>,
-  onProgress: (decodedVideo: DecodedVideo) => void,
-): Promise<DecodedVideo> {
-  return new Promise((resolve, reject) => {
-    const imageFrames: ImageFrame[] = [];
-    const globalSamples: MP4Sample[] = [];
+  onFrame: (frame: ImageFrame) => void,
+  onMetadata: (meta: DecodedMetadata) => void,
+  onDone: () => void,
+): void {
+  const globalSamples: MP4Sample[] = [];
 
-    let decoder: VideoDecoder;
+  let decoder: VideoDecoder;
 
-    let track: MP4VideoTrack | null = null;
-    const mp4File = createFile();
+  let track: MP4VideoTrack | null = null;
+  const mp4File = createFile();
 
-    mp4File.onError = reject;
-    mp4File.onReady = async info => {
+  mp4File.onError = error => {
+    onDone();
+    throw error;
+  };
+  mp4File.onReady = async info => {
       if (info.videoTracks.length > 0) {
         track = info.videoTracks[0];
       } else {
@@ -71,31 +76,32 @@ function decodeInternal(
         track = info.otherTracks[0];
       }
 
+
       if (track == null) {
-        reject(new Error(`${identifier} does not contain a video track`));
-        return;
+        onDone();
+        throw new Error(`${identifier} does not contain a video track`);
       }
+
+      onMetadata({
+        width: track.track_width,
+        height: track.track_height,
+        numFrames: track.nb_samples,
+        fps: (track.nb_samples / track.duration) * track.timescale,
+      });
 
       const timescale = track.timescale;
       const edits = track.edits;
 
       let frame_n = 0;
       decoder = new VideoDecoder({
-        // Be careful with any await in this function. The VideoDecoder will
-        // not await output and continue calling it with decoded frames.
         async output(inputFrame) {
           if (track == null) {
-            reject(new Error(`${identifier} does not contain a video track`));
-            return;
+            onDone();
+            throw new Error(`${identifier} does not contain a video track`);
           }
 
           const saveTrack = track;
 
-          // If the track has edits, we'll need to check that only frames are
-          // returned that are within the edit list. This can happen for
-          // trimmed videos that have not been transcoded and therefore the
-          // video track contains more frames than those visually rendered when
-          // playing back the video.
           if (edits != null && edits.length > 0) {
             const cts = Math.round(
               (inputFrame.timestamp * timescale) / 1_000_000,
@@ -106,13 +112,6 @@ function decodeInternal(
             }
           }
 
-          // Workaround for Chrome where the decoding stops at ~17 frames unless
-          // the VideoFrame is closed. So, the workaround here is to create a
-          // new VideoFrame and close the decoded VideoFrame.
-          // The frame has to be cloned, or otherwise some frames at the end of the
-          // video will be black. Note, the default VideoFrame.clone doesn't work
-          // and it is using a frame cloning found here:
-          // https://webcodecs-blogpost-demo.glitch.me/
           if (
             (isAndroid && isChrome) ||
             (isWindows && isChrome) ||
@@ -126,46 +125,20 @@ function decodeInternal(
           const sample = globalSamples[frame_n];
           if (sample != null) {
             const duration = (sample.duration * 1_000_000) / sample.timescale;
-            imageFrames.push({
+            onFrame({
               bitmap: inputFrame,
               timestamp: inputFrame.timestamp,
               duration,
             });
-            // Sort frames in order of timestamp. This is needed because Safari
-            // can return decoded frames out of order.
-            imageFrames.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-            // Update progress on first frame and then every 40th frame
-            if (onProgress != null && frame_n % 100 === 0) {
-              onProgress({
-                width: saveTrack.track_width,
-                height: saveTrack.track_height,
-                frames: imageFrames,
-                numFrames: saveTrack.nb_samples,
-                fps:
-                  (saveTrack.nb_samples / saveTrack.duration) *
-                  saveTrack.timescale,
-              });
-            }
           }
           frame_n++;
 
           if (saveTrack.nb_samples === frame_n) {
-            // Sort frames in order of timestamp. This is needed because Safari
-            // can return decoded frames out of order.
-            imageFrames.sort((a, b) => (a.timestamp > b.timestamp ? 1 : -1));
-            resolve({
-              width: saveTrack.track_width,
-              height: saveTrack.track_height,
-              frames: imageFrames,
-              numFrames: saveTrack.nb_samples,
-              fps:
-                (saveTrack.nb_samples / saveTrack.duration) *
-                saveTrack.timescale,
-            });
+            onDone();
           }
         },
-        error(error) {
-          reject(error);
+        error() {
+          onDone();
         },
       });
 
@@ -204,14 +177,12 @@ function decodeInternal(
         });
         mp4File.start();
       } else {
-        reject(
-          new Error(
-            `Decoder config faile: config ${JSON.stringify(
-              supportedConfig.config,
-            )} is not supported`,
-          ),
+        onDone();
+        throw new Error(
+          `Decoder config faile: config ${JSON.stringify(
+            supportedConfig.config,
+          )} is not supported`,
         );
-        return;
       }
     };
 
@@ -239,33 +210,49 @@ function decodeInternal(
   });
 }
 
-export function decode(
+export async function decode(
   file: File,
-  onProgress: (decodedVideo: DecodedVideo) => void,
+  onProgress?: (meta: DecodedMetadata & {framesDecoded: number}) => void,
 ): Promise<DecodedVideo> {
-  return decodeInternal(
-    file.name,
-    async (mp4File: MP4File) => {
-      const reader = new FileReader();
-      reader.onload = function () {
-        const result = this.result as MP4ArrayBuffer;
-        if (result != null) {
-          result.fileStart = 0;
-          mp4File.appendBuffer(result);
-        }
-        mp4File.flush();
-      };
-      reader.readAsArrayBuffer(file);
-    },
-    onProgress,
-  );
+  async function* fileStream(): FileStream {
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    yield {data: buffer, range: {start: 0, end: buffer.length}, contentLength: buffer.length};
+    return file;
+  }
+  return decodeStream(fileStream(), onProgress);
 }
 
-export function decodeStream(
+export async function decodeStream(
   fileStream: FileStream,
-  onProgress: (decodedVideo: DecodedVideo) => void,
+  onProgress?: (meta: DecodedMetadata & {framesDecoded: number}) => void,
 ): Promise<DecodedVideo> {
-  return decodeInternal(
+  let metadata: DecodedMetadata | null = null;
+  let decoded = 0;
+  let done = false;
+  const queue: ImageFrame[] = [];
+  let resolveNext: ((v: IteratorResult<ImageFrame>) => void) | null = null;
+
+  const frames: AsyncGenerator<ImageFrame, void> = {
+    async next() {
+      if (queue.length) {
+        return {value: queue.shift()!, done: false};
+      }
+      if (done) {
+        return {value: undefined, done: true};
+      }
+      return new Promise<IteratorResult<ImageFrame>>(res => {
+        resolveNext = res;
+      });
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  };
+
+  let resolveMeta: ((meta: DecodedVideo) => void) | null = null;
+  const metaPromise = new Promise<DecodedVideo>(res => (resolveMeta = res));
+
+  decodeInternal(
     'stream',
     async (mp4File: MP4File) => {
       let part = await fileStream.next();
@@ -279,6 +266,36 @@ export function decodeStream(
         part = await fileStream.next();
       }
     },
-    onProgress,
+    frame => {
+      decoded++;
+      if (onProgress && metadata != null) {
+        onProgress({...metadata, framesDecoded: decoded});
+      }
+      if (resolveNext) {
+        const r = resolveNext;
+        resolveNext = null;
+        r({value: frame, done: false});
+      } else {
+        queue.push(frame);
+      }
+    },
+    meta => {
+      metadata = meta;
+      if (resolveMeta) {
+        resolveMeta({
+          ...meta,
+          frames,
+        });
+        resolveMeta = null;
+      }
+    },
+    () => {
+      done = true;
+      if (resolveNext) {
+        resolveNext({value: undefined, done: true});
+      }
+    },
   );
+
+  return metaPromise;
 }
