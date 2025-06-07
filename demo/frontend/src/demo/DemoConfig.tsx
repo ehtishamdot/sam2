@@ -41,4 +41,5 @@ export const DEFAULT_EFFECT_LAYERS: EffectLayers = {
   highlight: 'Overlay',
 };
 
-export const MAX_UPLOAD_FILE_SIZE = '70MB';
+// Maximum allowed upload size for user provided videos
+export const MAX_UPLOAD_FILE_SIZE = '2048MB';
