@@ -7,13 +7,21 @@ import contextlib
 import logging
 import os
 import uuid
+import subprocess
+import shutil
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, Generator, List
+from typing import Any, Dict, Generator, List, Tuple
 
 import numpy as np
 import torch
-from app_conf import APP_ROOT, MODEL_SIZE
+from app_conf import (
+    APP_ROOT,
+    MODEL_SIZE,
+    FFMPEG_NUM_THREADS,
+    UPLOADS_PATH,
+    UPLOADS_PREFIX,
+)
 from inference.data_types import (
     AddMaskRequest,
     AddPointsRequest,
@@ -110,6 +118,8 @@ class InferenceAPI:
             self.session_states[session_id] = {
                 "canceled": False,
                 "state": inference_state,
+                "video_path": request.path,
+                "object_clip_urls": {},
             }
             return StartSessionResponse(session_id=session_id)
 
@@ -298,6 +308,7 @@ class InferenceAPI:
                         f"invalid propagation direction: {propagation_direction}"
                     )
 
+                object_ranges = {}
                 # First doing the forward propagation
                 if propagation_direction in ["both", "forward"]:
                     for outputs in self.predictor.propagate_in_video(
@@ -317,6 +328,14 @@ class InferenceAPI:
                         rle_mask_list = self.__get_rle_mask_list(
                             object_ids=obj_ids, masks=masks_binary
                         )
+
+                        for oid in obj_ids:
+                            rng = object_ranges.get(oid)
+                            if rng is None:
+                                object_ranges[oid] = [frame_idx, frame_idx]
+                            else:
+                                rng[0] = min(rng[0], frame_idx)
+                                rng[1] = max(rng[1], frame_idx)
 
                         yield PropagateDataResponse(
                             frame_index=frame_idx,
@@ -343,6 +362,14 @@ class InferenceAPI:
                             object_ids=obj_ids, masks=masks_binary
                         )
 
+                        for oid in obj_ids:
+                            rng = object_ranges.get(oid)
+                            if rng is None:
+                                object_ranges[oid] = [frame_idx, frame_idx]
+                            else:
+                                rng[0] = min(rng[0], frame_idx)
+                                rng[1] = max(rng[1], frame_idx)
+
                         yield PropagateDataResponse(
                             frame_index=frame_idx,
                             results=rle_mask_list,
@@ -350,6 +377,11 @@ class InferenceAPI:
             finally:
                 # Log upon completion (so that e.g. we can see if two propagations happen in parallel).
                 # Using `finally` here to log even when the tracking is aborted with GeneratorExit.
+                try:
+                    clip_urls = self._cut_object_clips(session.get("video_path"), object_ranges)
+                    session["object_clip_urls"] = clip_urls
+                except Exception as e:
+                    logger.error(f"failed to create object clips: {e}")
                 logger.info(
                     f"propagation ended in session {session_id}; {self.__get_session_stats()}"
                 )
@@ -388,6 +420,39 @@ class InferenceAPI:
             ),
         )
 
+    def _cut_object_clips(
+        self, video_path: str, object_ranges: Dict[int, Tuple[int, int]], fps: int = 24
+    ) -> Dict[int, str]:
+        """Create clip files for each object range and return their URLs."""
+        if video_path is None:
+            return {}
+        clip_urls: Dict[int, str] = {}
+        ffmpeg = shutil.which("ffmpeg")
+        for obj_id, (start_idx, end_idx) in object_ranges.items():
+            start_sec = start_idx / fps
+            duration = (end_idx - start_idx + 1) / fps
+            filename = f"{Path(video_path).stem}_{obj_id}_{start_idx}_{end_idx}.mp4"
+            out_path = Path(UPLOADS_PATH) / filename
+            subprocess.call(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(video_path),
+                    "-ss",
+                    f"{start_sec:.2f}",
+                    "-t",
+                    f"{duration:.2f}",
+                    "-threads",
+                    str(FFMPEG_NUM_THREADS),
+                    "-c:v",
+                    "copy",
+                    str(out_path),
+                ]
+            )
+            clip_urls[obj_id] = f"{UPLOADS_PREFIX}/{filename}"
+        return clip_urls
+
     def __get_session(self, session_id: str):
         session = self.session_states.get(session_id, None)
         if session is None:
@@ -395,6 +460,12 @@ class InferenceAPI:
                 f"Cannot find session {session_id}; it might have expired"
             )
         return session
+
+    def get_object_clip_urls(self, session_id: str):
+        session = self.session_states.get(session_id, None)
+        if session is None:
+            return {}
+        return session.get("object_clip_urls", {})
 
     def __get_session_stats(self):
         """Get a statistics string for live sessions and their GPU usage."""

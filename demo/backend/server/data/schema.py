@@ -18,6 +18,7 @@ from app_conf import (
     MAX_UPLOAD_VIDEO_DURATION,
     UPLOADS_PATH,
     UPLOADS_PREFIX,
+    API_URL,
 )
 from data.data_types import (
     AddPointsInput,
@@ -32,6 +33,7 @@ from data.data_types import (
     RLEMask,
     RLEMaskForObject,
     RLEMaskListOnFrame,
+    ObjectClip,
     StartSession,
     StartSessionInput,
     Video,
@@ -86,6 +88,12 @@ class Query:
         """
         all_videos = get_videos()
         return all_videos.values()
+
+    @strawberry.field
+    def object_clip_urls(self, info: strawberry.Info, session_id: str) -> List[ObjectClip]:
+        inference_api: InferenceAPI = info.context["inference_api"]
+        mapping = inference_api.get_object_clip_urls(session_id)
+        return [ObjectClip(object_id=k, url=f"{API_URL}/{v}") for k, v in mapping.items()]
 
 
 @strawberry.type

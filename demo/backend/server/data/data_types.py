@@ -60,6 +60,14 @@ class RLEMaskForObject:
 
 
 @strawberry.type
+class ObjectClip:
+    """Video clip information for an object."""
+
+    object_id: int
+    url: str
+
+
+@strawberry.type
 class RLEMaskListOnFrame:
     """Type for a list of object-associated RLE masks on a specific video frame."""
 
