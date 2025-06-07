@@ -10,10 +10,12 @@ import uuid
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, Generator, List
+from concurrent.futures import ThreadPoolExecutor
+import json
 
 import numpy as np
 import torch
-from app_conf import APP_ROOT, MODEL_SIZE
+from app_conf import APP_ROOT, MODEL_SIZE, SEGMENTS_PATH
 from inference.data_types import (
     AddMaskRequest,
     AddPointsRequest,
@@ -90,6 +92,10 @@ class InferenceAPI:
             model_cfg, checkpoint, device=device
         )
         self.inference_lock = Lock()
+        # Executor and status tracking for background propagation tasks
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        # Mapping of session_id -> info dict(progress, total, status, path, future)
+        self._background_jobs: Dict[str, Dict[str, Any]] = {}
 
     def autocast_context(self):
         if self.device.type == "cuda":
@@ -360,6 +366,69 @@ class InferenceAPI:
         session = self.__get_session(request.session_id)
         session["canceled"] = True
         return CancelPorpagateResponse(success=True)
+
+    # ------------------------------------------------------------------
+    # Background propagation helpers
+    # ------------------------------------------------------------------
+    def start_propagate_background(self, request: PropagateInVideoRequest) -> None:
+        """Start long running propagation in a background thread."""
+        session_id = request.session_id
+        if session_id in self._background_jobs and not self._background_jobs[session_id]["future"].done():
+            raise RuntimeError(f"background job already running for session {session_id}")
+
+        session = self.__get_session(session_id)
+        total_frames = session["state"]["num_frames"]
+        info: Dict[str, Any] = {
+            "progress": 0,
+            "total": total_frames,
+            "status": "running",
+            "result_path": None,
+        }
+
+        future = self._executor.submit(self._propagate_task, request)
+        info["future"] = future
+        self._background_jobs[session_id] = info
+
+    def get_propagation_status(self, session_id: str) -> Dict[str, Any]:
+        job = self._background_jobs.get(session_id)
+        if not job:
+            return {"status": "none"}
+
+        status = job.get("status", "running")
+        progress = job.get("progress", 0)
+        total = job.get("total", 1)
+        result_path = job.get("result_path")
+        return {
+            "status": status,
+            "progress": progress / float(total) if total else 0.0,
+            "result_path": result_path,
+        }
+
+    def _propagate_task(self, request: PropagateInVideoRequest) -> None:
+        session_id = request.session_id
+        results = []
+        try:
+            for output in self.propagate_in_video(request):
+                results.append(output.to_dict())
+                job = self._background_jobs.get(session_id)
+                if job:
+                    job["progress"] += 1
+        except Exception as exc:  # noqa: PIE786
+            logger.exception("background propagation failed: %s", exc)
+            job = self._background_jobs.get(session_id)
+            if job:
+                job["status"] = "error"
+            return
+
+        # Write results to json file
+        out_file = SEGMENTS_PATH / f"{session_id}.json"
+        with open(out_file, "w") as f:
+            json.dump(results, f)
+
+        job = self._background_jobs.get(session_id)
+        if job:
+            job["status"] = "completed"
+            job["result_path"] = str(out_file)
 
     def __get_rle_mask_list(
         self, object_ids: List[int], masks: np.ndarray

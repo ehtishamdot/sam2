@@ -18,6 +18,7 @@ from app_conf import (
     MAX_UPLOAD_VIDEO_DURATION,
     UPLOADS_PATH,
     UPLOADS_PREFIX,
+    SEGMENTS_PREFIX,
 )
 from data.data_types import (
     AddPointsInput,
@@ -32,6 +33,9 @@ from data.data_types import (
     RLEMask,
     RLEMaskForObject,
     RLEMaskListOnFrame,
+    StartBackgroundPropagationInput,
+    BackgroundPropagation,
+    PropagationStatus,
     StartSession,
     StartSessionInput,
     Video,
@@ -42,7 +46,7 @@ from data.transcoder import get_video_metadata, transcode, VideoMetadata
 from inference.data_types import (
     AddPointsRequest,
     CancelPropagateInVideoRequest,
-    CancelPropagateInVideoRequest,
+    PropagateInVideoRequest,
     ClearPointsInFrameRequest,
     ClearPointsInVideoRequest,
     CloseSessionRequest,
@@ -86,6 +90,21 @@ class Query:
         """
         all_videos = get_videos()
         return all_videos.values()
+
+    @strawberry.field
+    def propagation_status(self, session_id: str, info: strawberry.Info) -> PropagationStatus:
+        """Return progress information for a running background propagation."""
+        inference_api: InferenceAPI = info.context["inference_api"]
+        status = inference_api.get_propagation_status(session_id)
+        download_url = None
+        if status.get("result_path"):
+            filename = Path(status["result_path"]).name
+            download_url = f"{SEGMENTS_PREFIX}/{filename}"
+        return PropagationStatus(
+            progress=status.get("progress", 0.0),
+            status=status.get("status", "none"),
+            download_url=download_url,
+        )
 
 
 @strawberry.type
@@ -241,6 +260,21 @@ class Mutation:
         )
         response = inference_api.clear_points_in_video(request)
         return ClearPointsInVideo(success=response.success)
+
+    @strawberry.mutation
+    def start_background_propagation(
+        self, input: StartBackgroundPropagationInput, info: strawberry.Info
+    ) -> BackgroundPropagation:
+        """Trigger asynchronous propagation for a session."""
+        inference_api: InferenceAPI = info.context["inference_api"]
+
+        request = PropagateInVideoRequest(
+            type="propagate_in_video",
+            session_id=input.session_id,
+            start_frame_index=input.start_frame_index,
+        )
+        inference_api.start_propagate_background(request)
+        return BackgroundPropagation(success=True)
 
     @strawberry.mutation
     def cancel_propagate_in_video(

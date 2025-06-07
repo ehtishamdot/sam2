@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import json
 from typing import Any, Generator
 
 from app_conf import (
@@ -13,11 +14,14 @@ from app_conf import (
     POSTERS_PREFIX,
     UPLOADS_PATH,
     UPLOADS_PREFIX,
+    SEGMENTS_PATH,
+    SEGMENTS_PREFIX,
 )
 from data.loader import preload_data
 from data.schema import schema
 from data.store import set_videos
 from flask import Flask, make_response, Request, request, Response, send_from_directory
+from pathlib import Path
 from flask_cors import CORS
 from inference.data_types import PropagateDataResponse, PropagateInVideoRequest
 from inference.multipart import MultipartResponseBuilder
@@ -73,6 +77,18 @@ def send_uploaded_video(path: str):
         raise ValueError("resource not found")
 
 
+@app.route(f"/{SEGMENTS_PREFIX}/<path:path>", methods=["GET"])
+def send_segment_file(path: str):
+    try:
+        return send_from_directory(
+            SEGMENTS_PATH,
+            path,
+            as_attachment=True,
+        )
+    except Exception:
+        raise ValueError("resource not found")
+
+
 # TOOD: Protect route with ToS permission check
 @app.route("/propagate_in_video", methods=["POST"])
 def propagate_in_video() -> Response:
@@ -85,6 +101,37 @@ def propagate_in_video() -> Response:
     boundary = "frame"
     frame = gen_track_with_mask_stream(boundary, **args)
     return Response(frame, mimetype="multipart/x-savi-stream; boundary=" + boundary)
+
+
+@app.route("/background_propagate", methods=["POST"])
+def background_propagate() -> Response:
+    data = request.json
+    request_obj = PropagateInVideoRequest(
+        type="propagate_in_video",
+        session_id=data["session_id"],
+        start_frame_index=data.get("start_frame_index", 0),
+    )
+    inference_api.start_propagate_background(request_obj)
+    return make_response(json.dumps({"started": True}), 200)
+
+
+@app.route("/propagate_status/<session_id>", methods=["GET"])
+def propagate_status(session_id: str) -> Response:
+    status = inference_api.get_propagation_status(session_id)
+    return make_response(json.dumps(status), 200)
+
+
+@app.route("/download_segments/<session_id>", methods=["GET"])
+def download_segments(session_id: str):
+    status = inference_api.get_propagation_status(session_id)
+    path = status.get("result_path")
+    if not path:
+        return make_response("not ready", 404)
+    return send_from_directory(
+        SEGMENTS_PATH,
+        Path(path).name,
+        as_attachment=True,
+    )
 
 
 def gen_track_with_mask_stream(
