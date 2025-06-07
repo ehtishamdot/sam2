@@ -169,6 +169,61 @@ class AsyncVideoFrameLoader:
         return len(self.images)
 
 
+class LazyVideoFrameLoader:
+    """Lazy loader for video files using :class:`decord.VideoReader`."""
+
+    def __init__(
+        self,
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean,
+        img_std,
+        compute_device,
+        cache_size=32,
+    ):
+        import decord
+        from collections import OrderedDict
+
+        decord.bridge.set_bridge("torch")
+        # read one frame with original resolution to obtain width and height
+        vr_original = decord.VideoReader(video_path)
+        h, w, _ = vr_original[0].shape
+        self.video_height = h
+        self.video_width = w
+        del vr_original
+
+        self.vr = decord.VideoReader(
+            video_path, width=image_size, height=image_size
+        )
+        self.offload_video_to_cpu = offload_video_to_cpu
+        self.img_mean = img_mean
+        self.img_std = img_std
+        self.compute_device = compute_device
+        self.cache_size = cache_size
+        self.cache = OrderedDict()
+
+    def __getitem__(self, index: int):
+        if index in self.cache:
+            img = self.cache.pop(index)
+            self.cache[index] = img
+            return img
+
+        frame = self.vr[index].permute(2, 0, 1).float() / 255.0
+        frame -= self.img_mean
+        frame /= self.img_std
+        if not self.offload_video_to_cpu:
+            frame = frame.to(self.compute_device, non_blocking=True)
+
+        self.cache[index] = frame
+        if len(self.cache) > self.cache_size:
+            self.cache.popitem(last=False)
+        return frame
+
+    def __len__(self):
+        return len(self.vr)
+
+
 def load_video_frames(
     video_path,
     image_size,
@@ -285,28 +340,20 @@ def load_video_frames_from_video_file(
     img_std=(0.229, 0.224, 0.225),
     compute_device=torch.device("cuda"),
 ):
-    """Load the video frames from a video file."""
-    import decord
-
+    """Return a lazy loader over video frames."""
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
-    # Get the original video height and width
-    decord.bridge.set_bridge("torch")
-    video_height, video_width, _ = decord.VideoReader(video_path).next().shape
-    # Iterate over all frames in the video
-    images = []
-    for frame in decord.VideoReader(video_path, width=image_size, height=image_size):
-        images.append(frame.permute(2, 0, 1))
 
-    images = torch.stack(images, dim=0).float() / 255.0
-    if not offload_video_to_cpu:
-        images = images.to(compute_device)
-        img_mean = img_mean.to(compute_device)
-        img_std = img_std.to(compute_device)
-    # normalize by mean and std
-    images -= img_mean
-    images /= img_std
-    return images, video_height, video_width
+    lazy_loader = LazyVideoFrameLoader(
+        video_path=video_path,
+        image_size=image_size,
+        offload_video_to_cpu=offload_video_to_cpu,
+        img_mean=img_mean,
+        img_std=img_std,
+        compute_device=compute_device,
+    )
+
+    return lazy_loader, lazy_loader.video_height, lazy_loader.video_width
 
 
 def fill_holes_in_mask_scores(mask, max_area):

@@ -56,6 +56,8 @@ class SAM2VideoPredictor(SAM2Base):
             compute_device=compute_device,
         )
         inference_state = {}
+        # ``images`` can be a tensor list or a lazy loader. We store it directly
+        # and query the length lazily.
         inference_state["images"] = images
         inference_state["num_frames"] = len(images)
         # whether to offload the video frames to CPU memory
@@ -710,7 +712,9 @@ class SAM2VideoPredictor(SAM2Base):
         if backbone_out is None:
             # Cache miss -- we will run inference on a single image
             device = inference_state["device"]
-            image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
+            # ``images`` could be a list of tensors or a lazy loader.
+            image_tensor = inference_state["images"][frame_idx]
+            image = image_tensor.to(device).float().unsqueeze(0)
             backbone_out = self.forward_image(image)
             # Cache the most recent frame's feature (for repeated interactions with
             # a frame; we can use an LRU cache for more frames in the future).
