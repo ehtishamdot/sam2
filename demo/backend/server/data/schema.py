@@ -18,7 +18,7 @@ from app_conf import (
     MAX_UPLOAD_VIDEO_DURATION,
     UPLOADS_PATH,
     UPLOADS_PREFIX,
-    SEGMENTS_PREFIX,
+    API_URL,
 )
 from data.data_types import (
     AddPointsInput,
@@ -33,9 +33,7 @@ from data.data_types import (
     RLEMask,
     RLEMaskForObject,
     RLEMaskListOnFrame,
-    StartBackgroundPropagationInput,
-    BackgroundPropagation,
-    PropagationStatus,
+    ObjectClip,
     StartSession,
     StartSessionInput,
     Video,
@@ -92,20 +90,10 @@ class Query:
         return all_videos.values()
 
     @strawberry.field
-    def propagation_status(self, session_id: str, info: strawberry.Info) -> PropagationStatus:
-        """Return progress information for a running background propagation."""
+    def object_clip_urls(self, info: strawberry.Info, session_id: str) -> List[ObjectClip]:
         inference_api: InferenceAPI = info.context["inference_api"]
-        status = inference_api.get_propagation_status(session_id)
-        download_url = None
-        if status.get("result_path"):
-            filename = Path(status["result_path"]).name
-            download_url = f"{SEGMENTS_PREFIX}/{filename}"
-        return PropagationStatus(
-            progress=status.get("progress", 0.0),
-            status=status.get("status", "none"),
-            download_url=download_url,
-        )
-
+        mapping = inference_api.get_object_clip_urls(session_id)
+        return [ObjectClip(object_id=k, url=f"{API_URL}/{v}") for k, v in mapping.items()]
 
 @strawberry.type
 class Mutation:

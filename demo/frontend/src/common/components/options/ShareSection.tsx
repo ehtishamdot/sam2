@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 import DownloadOption from './DownloadOption';
+import ObjectClipDownloadOption from './ObjectClipDownloadOption';
 
 export default function ShareSection() {
   return (
     <div className="p-5 md:p-8">
       <DownloadOption />
+      <ObjectClipDownloadOption />
     </div>
   );
 }
