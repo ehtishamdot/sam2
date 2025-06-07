@@ -476,7 +476,6 @@ class InferenceAPI:
             for session_id, session in self.session_states.items()
         ]
         session_stats_str = (
-            "Test String Here - -"
             f"live sessions: [{', '.join(live_session_strs)}], GPU memory: "
             f"{torch.cuda.memory_allocated() // 1024**2} MiB used and "
             f"{torch.cuda.memory_reserved() // 1024**2} MiB reserved"
