@@ -152,3 +152,21 @@ class SessionExpiration:
     expiration_time: int
     max_expiration_time: int
     ttl: int
+
+
+@strawberry.input
+class StartBackgroundPropagationInput:
+    session_id: str
+    start_frame_index: int = 0
+
+
+@strawberry.type
+class BackgroundPropagation:
+    success: bool
+
+
+@strawberry.type
+class PropagationStatus:
+    progress: float
+    status: str
+    download_url: Optional[str]

@@ -48,8 +48,14 @@ POSTERS_PREFIX = "posters"
 # Path where all posters are stored
 POSTERS_PATH = DATA_PATH / POSTERS_PREFIX
 
+# Directory used to store processed video segments that can be downloaded by the
+# client. Each background propagation run will write its results in this folder.
+SEGMENTS_PREFIX = "segments"
+SEGMENTS_PATH = DATA_PATH / SEGMENTS_PREFIX
+
 # Make sure any of those paths exist
 os.makedirs(DATA_PATH, exist_ok=True)
 os.makedirs(GALLERY_PATH, exist_ok=True)
 os.makedirs(UPLOADS_PATH, exist_ok=True)
 os.makedirs(POSTERS_PATH, exist_ok=True)
+os.makedirs(SEGMENTS_PATH, exist_ok=True)

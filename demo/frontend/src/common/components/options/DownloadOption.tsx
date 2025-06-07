@@ -15,18 +15,18 @@
  */
 import {Package} from '@carbon/icons-react';
 import OptionButton from './OptionButton';
-import useDownloadVideo from './useDownloadVideo';
+import useBackendPropagation from './useBackendPropagation';
 
 export default function DownloadOption() {
-  const {download, state} = useDownloadVideo();
+  const {download, state} = useBackendPropagation();
 
   return (
     <OptionButton
       title="Download"
       Icon={Package}
       loadingProps={{
-        loading: state === 'started' || state === 'encoding',
-        label: 'Downloading...',
+        loading: state === 'running',
+        label: 'Processing...',
       }}
       onClick={download}
     />
